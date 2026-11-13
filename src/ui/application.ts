@@ -9,6 +9,7 @@ import {
 import { basename } from "node:path";
 import { spawn } from "node:child_process";
 import { Shell } from "./shell.ts";
+import { normalizeArrowInput } from "./keyboard-input.ts";
 import { adviceAge, adviceFeedback, newestAdvice } from "./advisor-history.ts";
 import { SettingsPanel } from "./settings-panel.ts";
 import { ConnectionsPanel } from "./connections-panel.ts";
@@ -32,6 +33,7 @@ import {
   sliceByColumn,
   stripTerminalSequences,
   visibleWidth,
+  wrapTextWithAnsi,
   matchesKey,
 } from "@earendil-works/pi-tui";
 import type { ExtensionUIBridge } from "../host/extension-ui.ts";
@@ -52,6 +54,11 @@ export class Application {
   };
   private reviewedAdvice: string[] = [];
   private refreshAdvisor?: () => void;
+  private subagentInspector?: {
+    bridge: ExtensionUIBridge;
+    dialog?: ExtensionUIBridge["activeDialog"];
+    moves: ("left" | "right")[];
+  };
   private authAbort?: AbortController;
   private workingTimer?: ReturnType<typeof setTimeout>;
   private terminalTitle = "";
@@ -302,6 +309,7 @@ export class Application {
       }
     }
     const bridge = this.host.bridge;
+    this.syncSubagentInspector();
     if (this.shell.toolsExpanded !== bridge.getToolsExpanded()) {
       this.shell.toolsExpanded = bridge.getToolsExpanded();
       this.transcriptRevision = -1;
@@ -380,8 +388,8 @@ export class Application {
     );
     this.shell.setNativeEditor(nativeLines);
     this.shell.setExtensionWidgets(
-      bridge.renderWidgets(Math.max(10, this.shell.editorWidth), "aboveEditor"),
-      bridge.renderWidgets(Math.max(10, this.shell.editorWidth), "belowEditor"),
+      this.widgetLines("aboveEditor"),
+      this.widgetLines("belowEditor"),
       bridge.renderHeader(Math.max(10, this.renderer.width - 4)),
       bridge.renderFooter(Math.max(10, this.renderer.width - 4)),
     );
@@ -467,14 +475,90 @@ export class Application {
     if (active)
       this.leaderTimer = setTimeout(() => this.setLeader(false), 2000);
   }
+  private widgetLines(placement: "aboveEditor" | "belowEditor") {
+    const width = Math.max(10, this.shell.editorWidth);
+    return this.host.bridge.renderWidgets(width, placement).flatMap((line) => {
+      const rewritten = line
+        .replace("↓/← to inspect", "ctrl+x ↓ inspect · ctrl+x ←/→ agents")
+        .replace(
+          "↑↓/jk select · enter inspect · esc back",
+          "ctrl+x ↓ inspect · ctrl+x ←/→ agents",
+        );
+      return rewritten === line ? [line] : wrapTextWithAnsi(rewritten, width);
+    });
+  }
+  private syncSubagentInspector() {
+    const inspector = this.subagentInspector;
+    const bridge = this.host.bridge;
+    const dialog = bridge.activeDialog;
+    if (!inspector || inspector.bridge !== bridge || dialog?.kind !== "custom")
+      return;
+    if (!inspector.dialog) inspector.dialog = dialog;
+    if (inspector.dialog !== dialog || !bridge.dialogCapturesInput) return;
+    for (const move of inspector.moves.splice(0))
+      bridge.handleCustomInput(move === "left" ? "\x1b[A" : "\x1b[B");
+  }
+  private navigateSubagents(direction: "down" | "left" | "right") {
+    const bridge = this.host.bridge;
+    const inspector = this.subagentInspector;
+    if (inspector?.bridge === bridge) {
+      if (direction !== "down") inspector.moves.push(direction);
+      this.syncSubagentInspector();
+      this.schedule();
+      return;
+    }
+    if (this.overlays.isOpen) {
+      bridge.notify(
+        "Close the current panel before opening the subagent inspector",
+        "info",
+      );
+      return;
+    }
+    if (
+      !this.host.commands().some((command) => command.name === "subagents-fleet")
+    ) {
+      bridge.notify(
+        "Subagent inspector is unavailable: the subagents-fleet command is not registered",
+        "warning",
+      );
+      return;
+    }
+    const request: NonNullable<Application["subagentInspector"]> = {
+      bridge,
+      moves: direction === "down" ? [] : [direction],
+    };
+    this.subagentInspector = request;
+    void this.host
+      .send("/subagents-fleet")
+      .catch((error) => {
+        if (!this.disposed) this.showError(error);
+      })
+      .finally(() => {
+        if (this.subagentInspector === request) this.subagentInspector = undefined;
+      });
+    this.schedule();
+  }
   private key(key: KeyEvent) {
     if (this.disposed || key.eventType === "release") return;
-    const raw =
+    if (key.ctrl && key.name === "x") {
+      key.preventDefault();
+      this.setLeader(true);
+      return;
+    }
+    if (this.leader && ["down", "left", "right"].includes(key.name)) {
+      key.preventDefault();
+      this.setLeader(false);
+      this.navigateSubagents(key.name as "down" | "left" | "right");
+      return;
+    }
+    if (this.leader && this.overlays.isOpen) this.setLeader(false);
+    const raw = normalizeArrowInput(
       key.name === "return"
         ? key.shift || key.ctrl
           ? "\n"
           : "\r"
-        : key.raw || key.sequence;
+        : key.raw || key.sequence,
+    );
     const input = this.host.bridge.processTerminalInput(raw);
     if (input === undefined) {
       key.preventDefault();
@@ -491,7 +575,12 @@ export class Application {
       return;
     }
     if (this.overlays.isOpen) {
-      if (this.overlays.handleKey(key)) {
+      const parsed =
+        ["up", "down", "left", "right"].includes(key.name) &&
+        raw !== (key.raw || key.sequence)
+          ? parseKeypress(raw)
+          : undefined;
+      if (this.overlays.handleKey(parsed ? new KeyEvent(parsed) : key)) {
         key.preventDefault();
         return;
       }
@@ -512,11 +601,6 @@ export class Application {
     if (key.ctrl && key.name === "p") {
       key.preventDefault();
       this.commandPalette();
-      return;
-    }
-    if (key.ctrl && key.name === "x") {
-      key.preventDefault();
-      this.setLeader(true);
       return;
     }
     if (this.leader) {
@@ -635,6 +719,10 @@ export class Application {
       this.host.bridge.setEditorText("");
       this.saveDraft();
       this.schedule();
+      if (text.trim() === "/subagents-fleet") {
+        this.navigateSubagents("down");
+        return;
+      }
       await this.host.send(text, steer);
     } catch (error) {
       if (!this.host.bridge.getEditorText())

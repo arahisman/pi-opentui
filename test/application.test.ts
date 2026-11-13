@@ -1,19 +1,21 @@
 import { test, expect, spyOn } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTestRenderer } from "@opentui/core/testing";
 import { BoxRenderable, TextRenderable } from "@opentui/core";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { PiHost, hostEditorFactory } from "../src/host/controller.ts";
 import { Application } from "../src/ui/application.ts";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 
-async function fixture() {
+async function fixture(extensionFactories: ExtensionFactory[] = []) {
   const dir = mkdtempSync(join(tmpdir(), "pi-opentui-app-"));
   const host = await PiHost.create({
     cwd: dir,
     agentDir: join(dir, "agent"),
     clean: true,
+    extensionFactories,
   });
   const setup = await createTestRenderer({
     width: 140,
@@ -102,6 +104,12 @@ test("extension questions resolve and cancellation never hangs the host", async 
 
 test("draft remains isolated across session switches and is restored on return", async () => {
   const f = await fixture();
+  const newSession = f.host.newSession.bind(f.host);
+  let pendingSession: ReturnType<PiHost["newSession"]> | undefined;
+  const startSession = spyOn(f.host, "newSession").mockImplementation(() => {
+    pendingSession = newSession();
+    return pendingSession;
+  });
   try {
     f.host.session.sessionManager.appendSessionInfo("Fixture session");
     const first = f.host.session.sessionFile!;
@@ -109,14 +117,21 @@ test("draft remains isolated across session switches and is restored on return",
     await f.frame();
     f.app["commandPalette"]("new");
     f.setup.mockInput.pressEnter();
-    await f.frame();
+    for (let attempt = 0; attempt < 100; attempt++) {
+      await f.frame();
+      if (pendingSession && f.host.session.sessionFile !== first) break;
+    }
+    expect(pendingSession).toBeDefined();
     expect(f.host.session.sessionFile).not.toBe(first);
+    await pendingSession;
     f.host.bridge.setEditorText("Second draft");
     await f.frame();
     await f.host.switchSession(first);
     await f.frame();
     expect(f.host.bridge.getEditorText()).toBe("First draft");
   } finally {
+    if (pendingSession) await Promise.allSettled([pendingSession]);
+    startSession.mockRestore();
     await f.dispose();
   }
 });
@@ -664,6 +679,212 @@ test("advisor menu ages refresh while idle without resetting the selected advice
   } finally {
     snapshotSpy.mockRestore();
     clock.mockRestore();
+    await f.dispose();
+  }
+});
+
+
+test("Ctrl+X arrows open the registered fleet inspector and switch agents without changing the draft", async () => {
+  let selected = 0;
+  let opened = 0;
+  const factory: ExtensionFactory = (pi) => {
+    pi.registerCommand("subagents-fleet", {
+      handler: async (_args, ctx) => {
+        opened++;
+        await ctx.ui.custom<void>((tui, _theme, _keys, done) => ({
+          render: () => [`Fleet selected agent ${selected}`],
+          invalidate() {},
+          handleInput: (data) => {
+            if (matchesKey(data, "down")) selected++;
+            else if (matchesKey(data, "up")) selected--;
+            else if (matchesKey(data, "escape")) done();
+            tui.requestRender();
+          },
+        }));
+      },
+    });
+    pi.on("session_start", (_event, ctx) => {
+      ctx.ui.setWidget("subagent-fleet", [
+        "Roster · ↓/← to inspect",
+        "Tokens ↑123 ↓456 · ↓24k window · unrelated ← navigation",
+        "↑↓/jk select · enter inspect · esc back",
+      ]);
+      ctx.ui.onTerminalInput((data) => {
+        if (matchesKey(data, "down")) return { consume: true };
+      });
+    });
+  };
+  const f = await fixture([factory]);
+  const send = spyOn(f.host, "send");
+  try {
+    f.host.bridge.setEditorText("ab");
+    await f.frame();
+    f.setup.mockInput.pressArrow("left");
+    await f.setup.mockInput.typeText("Z");
+    expect(f.host.bridge.getEditorText()).toBe("aZb");
+    f.setup.mockInput.pressArrow("right");
+    await f.setup.mockInput.typeText("X");
+    expect(f.host.bridge.getEditorText()).toBe("aZbX");
+    f.host.bridge.setEditorText("Preserve this draft");
+    const initial = await f.frame();
+    expect(initial).not.toContain("↓/← to inspect");
+    expect(initial).not.toContain("↑↓/jk select · enter inspect · esc back");
+    expect(initial).toContain("ctrl+x ↓ inspect");
+    expect(initial).toContain("Tokens ↑123 ↓456 · ↓24k window · unrelated ← navigation");
+    f.setup.mockInput.pressArrow("left");
+    expect(opened).toBe(0);
+    f.setup.mockInput.pressKey("x", { ctrl: true });
+    f.setup.mockInput.pressArrow("down");
+    expect(await f.frame()).toContain("Fleet selected agent 0");
+    expect(opened).toBe(1);
+    f.setup.mockInput.pressKey("x", { ctrl: true });
+    f.setup.mockInput.pressArrow("right");
+    expect(await f.frame()).toContain("Fleet selected agent 1");
+    f.setup.mockInput.pressKey("x", { ctrl: true });
+    f.setup.mockInput.pressArrow("left");
+    expect(await f.frame()).toContain("Fleet selected agent 0");
+    f.setup.mockInput.pressEscape();
+    await f.frame();
+    expect(f.host.bridge.getEditorText()).toBe("Preserve this draft");
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith("/subagents-fleet");
+    f.app.overlays.openText({ title: "Other panel", body: "Retain this panel" });
+    f.setup.mockInput.pressKey("x", { ctrl: true });
+    f.setup.mockInput.pressArrow("right");
+    expect(await f.frame()).toContain("Close the current panel");
+    expect(opened).toBe(1);
+    f.setup.mockInput.pressEscape();
+    f.setup.mockInput.pressKey("x", { ctrl: true });
+    f.setup.mockInput.pressArrow("right");
+    expect(await f.frame()).toContain("Fleet selected agent 1");
+    expect(opened).toBe(2);
+    f.setup.mockInput.pressEscape();
+    await f.frame();
+    await f.app.submit("/subagents-fleet");
+    expect(await f.frame()).toContain("Fleet selected agent 1");
+    f.setup.mockInput.pressKey("x", { ctrl: true });
+    f.setup.mockInput.pressArrow("left");
+    expect(await f.frame()).toContain("Fleet selected agent 0");
+    expect(opened).toBe(3);
+  } finally {
+    send.mockRestore();
+    await f.dispose();
+  }
+});
+
+test("fleet shortcut cannot become a model prompt when the extension is missing", async () => {
+  const f = await fixture();
+  const send = spyOn(f.host, "send");
+  try {
+    f.setup.mockInput.pressKey("x", { ctrl: true });
+    f.setup.mockInput.pressArrow("down");
+    expect(await f.frame()).toContain("Subagent inspector is unavailable");
+    expect(send).not.toHaveBeenCalled();
+  } finally {
+    send.mockRestore();
+    await f.dispose();
+  }
+});
+
+
+const installedFleetModule = join(homedir(), ".pi/agent/local-packages/subagents/src/tui/fleet.js");
+test.skipIf(!existsSync(installedFleetModule))(
+  "Ctrl+X navigation opens the actual installed fleet and switches markdown child transcripts offline",
+  async () => {
+    const { createRequire } = await import("node:module");
+    const { fileURLToPath } = await import("node:url");
+    const { createJiti } = await import("jiti");
+    const require = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+    const loader = createJiti(import.meta.url, {
+      fsCache: false,
+      moduleCache: false,
+      tryNative: false,
+      alias: {
+        "@earendil-works/pi-coding-agent": fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")),
+        "@earendil-works/pi-tui": fileURLToPath(import.meta.resolve("@earendil-works/pi-tui")),
+        "@earendil-works/pi-ai": fileURLToPath(import.meta.resolve("@earendil-works/pi-ai/compat")),
+        "@earendil-works/pi-agent-core": fileURLToPath(import.meta.resolve("@earendil-works/pi-agent-core")),
+        typebox: require.resolve("typebox"),
+      },
+      virtualModules: {
+        "@earendil-works/pi-coding-agent": await import("@earendil-works/pi-coding-agent"),
+        "@earendil-works/pi-tui": await import("@earendil-works/pi-tui"),
+        "@earendil-works/pi-ai": await import("@earendil-works/pi-ai/compat"),
+      },
+    });
+    const { SubagentFleetComponent } = await loader.import<any>(installedFleetModule);
+    const asyncJobs = new Map();
+    const factory: ExtensionFactory = (pi) => {
+      pi.registerCommand("subagents-fleet", {
+        handler: async (_args, ctx) => {
+          await ctx.ui.custom<void>((tui, theme, _keys, done) =>
+            new SubagentFleetComponent(tui, theme, {
+              baseCwd: ctx.cwd, asyncJobs, foregroundControls: new Map(),
+            }, done, { refreshMs: 60_000 }),
+          );
+        },
+      });
+    };
+    const f = await fixture([factory]);
+    const send = spyOn(f.host, "send");
+    try {
+      for (let index = 0; index < 2; index++) {
+        const asyncDir = join(f.dir, `child-${index}`);
+        mkdirSync(asyncDir);
+        const transcriptPath = join(asyncDir, "transcript.jsonl");
+        writeFileSync(transcriptPath, JSON.stringify({
+          recordType: "message", role: "assistant", text: `# Offline child ${index} transcript\n\n**Verified** keyboard navigation.`,
+        }) + "\n");
+        asyncJobs.set(`child-${index}`, {
+          asyncId: `child-${index}`, asyncDir, status: "complete", mode: "single",
+          startedAt: 1000 - index, updatedAt: 2000 - index,
+          steps: [{ agent: `worker-${index}`, index: 0, status: "complete", transcriptPath }],
+        });
+      }
+      f.host.bridge.setEditorText("Retained offline draft");
+      f.setup.mockInput.pressKey("x", { ctrl: true });
+      f.setup.mockInput.pressArrow("down");
+      expect(await f.frame()).toContain("Offline child 0 transcript");
+      f.setup.mockInput.pressArrow("down");
+      expect(await f.frame()).toContain("Offline child 1 transcript");
+      f.setup.mockInput.pressArrow("up");
+      expect(await f.frame()).toContain("Offline child 0 transcript");
+      f.setup.mockInput.pressKey("x", { ctrl: true });
+      f.setup.mockInput.pressArrow("right");
+      expect(await f.frame()).toContain("Offline child 1 transcript");
+      if (process.env.PI_OPENTUI_TEST_CAPTURE)
+        writeFileSync(process.env.PI_OPENTUI_TEST_CAPTURE, JSON.stringify(f.setup.captureSpans()));
+      f.setup.mockInput.pressKey("x", { ctrl: true });
+      f.setup.mockInput.pressArrow("left");
+      expect(await f.frame()).toContain("Offline child 0 transcript");
+      f.setup.mockInput.pressEscape();
+      await f.frame();
+      expect(f.host.bridge.getEditorText()).toBe("Retained offline draft");
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith("/subagents-fleet");
+    } finally {
+      send.mockRestore();
+      await f.dispose();
+    }
+  },
+);
+
+
+test("rewritten subagent hints remain readable in a narrow editor without dropping usage arrows", async () => {
+  const f = await fixture([(pi) => {
+    pi.on("session_start", (_event, ctx) => {
+      ctx.ui.setWidget("subagent-fleet", ["Roster · ↓/← to inspect", "↓24k window"]);
+    });
+  }]);
+  try {
+    f.setup.resize(35, 32);
+    const frame = await f.frame();
+    expect(frame).toContain("ctrl+x ↓ inspect");
+    expect(frame).toContain("ctrl+x ←/→");
+    expect(frame).toContain("agents");
+    expect(frame).toContain("↓24k window");
+    expect(frame).not.toContain("↓/← to inspect");
+  } finally {
     await f.dispose();
   }
 });

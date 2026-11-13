@@ -268,6 +268,7 @@ export class ExtensionUIBridge implements ExtensionUIContext {
       get: () => this.themeProxy,
       enumerable: true,
     });
+    themes.setThemeInstance(this.themeProxy);
   }
   get theme(): Theme {
     return this.themeProxy;

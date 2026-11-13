@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Editor, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import {
   ExtensionUIBridge,
   UserCancelledInteractionError,
@@ -703,4 +704,18 @@ describe("host editor project and preference binding", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+});
+
+
+test("native SDK markdown helpers follow the active bridge theme", () => {
+  const bridge = new ExtensionUIBridge();
+  try {
+    const markdown = getMarkdownTheme();
+    expect(markdown.heading("Heading")).toBe(bridge.theme.fg("mdHeading", "Heading"));
+    expect(bridge.setTheme("light").success).toBe(true);
+    expect(markdown.heading("Heading")).toBe(bridge.theme.fg("mdHeading", "Heading"));
+    expect(markdown.code("const value = 1")).toBe(bridge.theme.fg("mdCode", "const value = 1"));
+  } finally {
+    bridge.dispose();
+  }
 });
