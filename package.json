@@ -1,6 +1,6 @@
 {
-  "name": "pi-opentui",
-  "version": "0.1.0-alpha.2",
+  "name": "@arahisman/pi-opentui",
+  "version": "0.1.0-alpha.3",
   "description": "An experimental OpenTUI terminal interface for Pi with session navigation, model usage and optional advisor integration",
   "type": "module",
   "license": "MIT",
@@ -17,7 +17,8 @@
   "pi": {
     "extensions": [
       "./src/extension.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/arahisman/pi-opentui/main/docs/images/conversation.png"
   },
   "scripts": {
     "start": "bun src/cli.ts",

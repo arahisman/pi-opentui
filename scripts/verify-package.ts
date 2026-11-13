@@ -95,7 +95,7 @@ try {
     [node, npm, "install", "--omit=dev", "--no-audit", "--no-fund", archive],
     prefix,
   );
-  const packagePath = join(prefix, "node_modules/pi-opentui"),
+  const packagePath = join(prefix, "node_modules", metadata[0].name),
     require = createRequire(join(packagePath, "package.json"));
   const help = await run(
     [join(prefix, "node_modules/.bin/pi-opentui"), "--help"],
