@@ -2,7 +2,7 @@
 
 An experimental terminal interface for [Pi](https://github.com/earendil-works/pi), built with [OpenTUI](https://github.com/anomalyco/opentui). OpenCode-inspired colors and keyboard interactions, one scrolling sidebar, and your existing Pi sessions and configuration.
 
-**Public alpha · 0.1.0-alpha.3.** The frontend runs real Pi through its SDK; it is not a fork of OpenCode, a new model provider, or an orchestration framework. No OmO installation is needed.
+**Public alpha · 0.1.0-alpha.4.** The frontend runs real Pi through its SDK; it is not a fork of OpenCode, a new model provider, or an orchestration framework. No OmO installation is needed.
 
 ![Conversation, model usage and optional advisor history](https://raw.githubusercontent.com/arahisman/pi-opentui/main/docs/images/conversation.png)
 
@@ -17,7 +17,7 @@ npm install -g @arahisman/pi-opentui@alpha
 pi-opentui --cwd /path/to/project
 ```
 
-The npm package is scoped to `@arahisman`; the executable remains `pi-opentui`. You can also download the installable `.tgz` and checksum from the [GitHub release](https://github.com/arahisman/pi-opentui/releases/tag/v0.1.0-alpha.3).
+The npm package is scoped to `@arahisman`; the executable remains `pi-opentui`. You can also download the installable `.tgz` and checksum from the [GitHub release](https://github.com/arahisman/pi-opentui/releases/tag/v0.1.0-alpha.4).
 
 Or install from a checkout:
 
@@ -31,7 +31,7 @@ node bin/pi-opentui.mjs --cwd /path/to/project
 To add `/opentui` to an existing compatible Pi installation:
 
 ```sh
-pi install npm:@arahisman/pi-opentui@0.1.0-alpha.3
+pi install npm:@arahisman/pi-opentui@0.1.0-alpha.4
 ```
 
 Run `/opentui` at an idle boundary to hand the current session to the frontend. Exiting returns the saved session to native Pi. Installing this package does not automatically replace Pi's interface. The alpha pins **Pi SDK 1.5.2 and OpenTUI 0.8.4**; compatibility with other Pi versions is not promised.

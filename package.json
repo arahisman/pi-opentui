@@ -1,6 +1,6 @@
 {
   "name": "@arahisman/pi-opentui",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "description": "An experimental OpenTUI terminal interface for Pi with session navigation, model usage and optional advisor integration",
   "type": "module",
   "license": "MIT",
