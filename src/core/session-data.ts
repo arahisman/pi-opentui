@@ -6,6 +6,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { object, projectUsage, type UsageProjection } from "./telemetry.ts";
 import { loadUsageJournal } from "./usage-journal.ts";
+import { persistedCompactionInterruptions } from "./compaction-state.ts";
 
 export interface TranscriptItem {
   id: string;
@@ -39,6 +40,7 @@ export interface TranscriptItem {
 }
 export interface TranscriptProjectionOptions {
   hasEntryRenderer?: (customType: string) => boolean;
+  isCompactionInterruption?: (entryId: string) => boolean;
 }
 const text = (value: unknown): string =>
   typeof value === "string" ? value : "";
@@ -65,6 +67,7 @@ export function projectTranscript(
   entries: readonly unknown[],
   options: TranscriptProjectionOptions = {},
 ): TranscriptItem[] {
+  const interrupted = persistedCompactionInterruptions(entries);
   const result: TranscriptItem[] = [],
     calls = new Map<string, string>();
   entries.forEach((raw, index) => {
@@ -228,7 +231,11 @@ export function projectTranscript(
           customType: block.type,
         });
     });
-    if (message.errorMessage)
+    if (
+      message.errorMessage &&
+      !(message.stopReason === "aborted" &&
+        (interrupted.has(entryId) || options.isCompactionInterruption?.(entryId)))
+    )
       push("error", role, text(message.errorMessage), "error", {
         isError: true,
       });

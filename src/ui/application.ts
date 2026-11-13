@@ -318,7 +318,10 @@ export class Application {
       this.terminalTitle = bridge.title;
       this.renderer.setTerminalTitle(bridge.title);
     }
-    const working = this.host.session.isStreaming && bridge.workingVisible;
+    const snapshot = this.host.snapshot();
+    const working =
+      snapshot.compaction !== undefined ||
+      (this.host.session.isStreaming && bridge.workingVisible);
     const frames = bridge.workingIndicator?.frames ?? ["●●●"];
     const interval = Math.max(400, bridge.workingIndicator?.intervalMs ?? 500);
     const frame = sliceByColumn(
@@ -345,10 +348,12 @@ export class Application {
     }
     const compactions = this.host.compactions;
     this.shell.update({
-      ...this.host.snapshot(),
-      workingMessage: working
-        ? (bridge.workingMessage ?? "Working")
-        : undefined,
+      ...snapshot,
+      workingMessage: snapshot.compaction
+        ? "Compacting context"
+        : working
+          ? (bridge.workingMessage ?? "Working")
+          : undefined,
       workingFrame: Math.floor(Date.now() / interval),
       workingGlyph:
         frame + " ".repeat(Math.max(0, frameWidth - visibleWidth(frame))),
@@ -615,6 +620,10 @@ export class Application {
     }
     if (key.name === "escape") {
       key.preventDefault();
+      if (this.host.snapshot().compaction) {
+        void this.host.abort();
+        return;
+      }
       if (
         (
           this.host.bridge.editorComponent as {
@@ -1098,7 +1107,7 @@ export class Application {
     try {
       if (!this.host.session.isIdle)
         throw new Error("Wait for current work before compacting");
-      await this.host.session.compact();
+      await this.host.compact();
       this.schedule();
     } catch (error) {
       this.showError(error);

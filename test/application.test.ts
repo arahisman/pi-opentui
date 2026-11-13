@@ -7,6 +7,7 @@ import { BoxRenderable, TextRenderable } from "@opentui/core";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { PiHost, hostEditorFactory } from "../src/host/controller.ts";
 import { Application } from "../src/ui/application.ts";
+import type { ShellState } from "../src/ui/shell.ts";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 
 async function fixture(extensionFactories: ExtensionFactory[] = []) {
@@ -885,6 +886,99 @@ test("rewritten subagent hints remain readable in a narrow editor without droppi
     expect(frame).toContain("↓24k window");
     expect(frame).not.toContain("↓/← to inspect");
   } finally {
+    await f.dispose();
+  }
+});
+
+
+for (const automatic of [false, true]) {
+  test(`${automatic ? "automatic" : "manual"} compaction stays visible and animated between SDK events, and Escape cancels it`, async () => {
+    const f = await fixture();
+    let now = Date.parse("2026-01-02T00:00:00Z");
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const original = f.host.snapshot();
+    let compaction: ShellState["compaction"] = {
+      startedAt: now - 1000, automatic, reason: automatic ? "threshold" : "manual",
+    };
+    const snapshot = spyOn(f.host, "snapshot").mockImplementation(() => ({
+      ...original, status: compaction ? "compacting" : "idle", compaction,
+    }));
+    const abort = spyOn(f.host, "abort").mockImplementation(async () => {
+      compaction = undefined;
+      f.host.bridge.notify("Compaction cancelled", "info");
+      f.host.emit("change");
+    });
+    try {
+      f.host.bridge.setWorkingVisible(false);
+      expect(f.host.session.isStreaming).toBe(false);
+      f.host.emit("change");
+      const frame = await f.frame();
+      expect(frame).toContain("Compacting context");
+      expect(frame).toContain("1s elapsed");
+      expect(frame.trimEnd().split("\n").at(-1)).toContain("Compacting context");
+      const firstFooter = f.setup.captureSpans().lines.at(-1);
+      now += 2000;
+      await Bun.sleep(550);
+      expect(await f.frame()).toContain("3s elapsed");
+      expect(f.setup.captureSpans().lines.at(-1)).not.toEqual(firstFooter);
+      f.setup.mockInput.pressEscape();
+      const cancelled = await f.frame();
+      expect(abort).toHaveBeenCalledTimes(1);
+      expect(cancelled).not.toContain("Compacting context");
+      expect(cancelled).toContain("Compaction cancelled");
+      expect(cancelled).not.toContain("Context compacted");
+      f.host.bridge.notify("Compaction failed: offline summary failure", "error");
+      expect(await f.frame()).toContain("Compaction failed: offline summary failure");
+    } finally {
+      abort.mockRestore();
+      snapshot.mockRestore();
+      clock.mockRestore();
+      await f.dispose();
+    }
+  });
+}
+
+
+test("manual /compact uses the host lifecycle wrapper and shows progress until the SDK operation settles", async () => {
+  const f = await fixture();
+  type Result = Awaited<ReturnType<PiHost["session"]["compact"]>>;
+  let finish!: (result: Result) => void;
+  const completion = new Promise<Result>((resolve) => { finish = resolve; });
+  const result: Result = { summary: "Fixture summary", firstKeptEntryId: "fixture", tokensBefore: 1200 };
+  const sdkCompact = spyOn(f.host.session, "compact").mockReturnValue(completion);
+  const compact = f.host.compact.bind(f.host);
+  let operation: ReturnType<PiHost["compact"]> | undefined;
+  const hostCompact = spyOn(f.host, "compact").mockImplementation(() => {
+    operation = compact();
+    return operation;
+  });
+  try {
+    await f.app.submit("/compact");
+    const active = await f.frame();
+    expect(hostCompact).toHaveBeenCalledTimes(1);
+    expect(sdkCompact).toHaveBeenCalledTimes(1);
+    expect(active).toContain("Compacting context");
+    expect(f.host.snapshot().status).toBe("compacting");
+    finish(result);
+    await operation;
+    const settled = await f.frame();
+    expect(settled).not.toContain("Compacting context");
+    expect(settled).not.toContain("Context compacted");
+    expect(f.host.snapshot().compaction).toBeUndefined();
+    f.app.shell.addText("after-compaction", "Fixture", "After compaction selection");
+    const lines = (await f.frame()).split("\n");
+    const row = lines.findIndex((line) => line.includes("After compaction selection"));
+    expect(row).toBeGreaterThanOrEqual(0);
+    const col = lines[row]!.indexOf("After compaction selection");
+    await f.setup.mockMouse.pressDown(col, row);
+    await f.setup.mockMouse.emitMouseEvent("drag", col + 4, row);
+    await f.setup.mockMouse.release(col + 4, row);
+    expect(f.setup.renderer.getSelection()?.getSelectedText()).toBe("After");
+  } finally {
+    finish(result);
+    if (operation) await Promise.allSettled([operation]);
+    hostCompact.mockRestore();
+    sdkCompact.mockRestore();
     await f.dispose();
   }
 });

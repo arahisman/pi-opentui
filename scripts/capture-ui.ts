@@ -587,6 +587,24 @@ try {
   if (copiedSelections.at(-1) !== "Usage & context")
     throw new Error("Selection copy transport did not receive final text");
   setup.renderer.clearSelection();
+  const originalSnapshot = host.snapshot.bind(host);
+  host.snapshot = () => ({
+    ...originalSnapshot(),
+    status: "compacting",
+    compaction: {
+      startedAt: Date.now() - 12_000,
+      automatic: true,
+      reason: "threshold",
+      tokensBefore: 137000,
+    },
+  });
+  host.emit("change");
+  await capture("36-compacting-context");
+  setup.resize(68, 32);
+  await capture("37-compacting-context-narrow");
+  setup.resize(150, 46);
+  host.snapshot = originalSnapshot;
+  host.emit("change");
   const question = host.bridge.select("Как обработать конфликт файлов?", [
     "Сохранить обе версии",
     "Остановиться и показать diff",

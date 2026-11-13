@@ -258,3 +258,68 @@ test("advisor sidebar shows newest first, ages, ratings and a separate local rev
     await setup.dispose();
   }
 });
+
+
+test("active compaction has a transient progress block and footer while saved summaries stay in history", async () => {
+  const setup = await createTestRenderer({ width: 140, height: 38 });
+  const now = Date.parse("2026-01-02T00:00:00Z");
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const shell = new Shell(setup.renderer, state, () => {});
+  const rows = [{ id: "user:0", entryId: "user", kind: "text" as const, role: "user" as const, text: "Retain the user's message" }];
+  try {
+    shell.setTranscript(rows);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      await setup.renderOnce();
+      if (setup.captureCharFrame().includes("Retain the user's message")) break;
+      await Bun.sleep(5);
+    }
+    const before = shell.transcript.getChildren().map((child) => child.id);
+    shell.update({
+      ...state, status: "compacting",
+      compaction: { startedAt: now - 7000, automatic: true, reason: "threshold", tokensBefore: 90000 },
+      workingFrame: 1,
+    });
+    await setup.renderOnce();
+    let frame = setup.captureCharFrame();
+    expect(frame).toContain("Compacting context");
+    expect(frame).toContain("Automatic");
+    expect(frame).toContain("90k tokens before");
+    expect(frame).toContain("7s elapsed");
+    expect(frame).toContain("Reason: threshold");
+    expect(frame).toContain("esc cancel");
+    expect(frame.trimEnd().split("\n").at(-1)).toContain("Compacting context");
+    expect(shell.transcript.getChildren().map((child) => child.id)).toEqual(before);
+    shell.update(state);
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    expect(frame).not.toContain("Compacting context");
+    expect(frame).not.toContain("Context compacted");
+    shell.setTranscript([...rows, { id: "compact:0", entryId: "compact", kind: "compaction", role: "system", text: "Saved summary", tokensBefore: 90000 }]);
+    await setup.renderOnce();
+    frame = setup.captureCharFrame();
+    expect(frame.match(/Context compacted/g)?.length).toBe(1);
+    expect(frame).toContain("Retain the user's message");
+  } finally {
+    clock.mockRestore();
+    shell.dispose();
+    await setup.dispose();
+  }
+});
+
+test("compaction progress omits unavailable metadata and does not imply who requested it", async () => {
+  const setup = await createTestRenderer({ width: 70, height: 28 });
+  const shell = new Shell(setup.renderer, state, () => {});
+  try {
+    shell.update({ ...state, status: "compacting", compaction: { startedAt: Date.now(), automatic: false } });
+    await setup.renderOnce();
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("Compacting context");
+    expect(frame).not.toContain("tokens before");
+    expect(frame).not.toContain("Reason:");
+    expect(frame).not.toContain("Manual");
+    expect(frame).not.toContain("user initiated");
+  } finally {
+    shell.dispose();
+    await setup.dispose();
+  }
+});

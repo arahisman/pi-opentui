@@ -42,6 +42,7 @@ import {
 import { ExtensionUIBridge } from "./extension-ui.ts";
 import { createAdvisorFeedbackExtension } from "./advisor-feedback.ts";
 import { ProjectionCache } from "../core/projection-cache.ts";
+import { CompactionState } from "../core/compaction-state.ts";
 import { UiStore } from "../core/ui-store.ts";
 import type { TranscriptItem } from "../core/session-data.ts";
 import type { ShellState } from "../ui/shell.ts";
@@ -224,7 +225,9 @@ export class PiHost extends EventEmitter {
   private liveMessage?: unknown;
   private liveId = "";
   private liveRevision = 0;
+  private compactionState = new CompactionState();
   private projections = new ProjectionCache({
+    isCompactionInterruption: (entryId) => this.compactionState.interrupted.has(entryId),
     hasEntryRenderer: (customType) =>
       !!this.session.extensionRunner.getEntryRenderer(customType),
   });
@@ -343,6 +346,7 @@ export class PiHost extends EventEmitter {
     this.runtime.setRebindSession(() => this.bind());
     this.runtime.setBeforeSessionInvalidate(() => {
       this.emit("before_session_change");
+      this.compactionState.clear();
       this.unsubscribe?.();
       this.unsubscribe = undefined;
       this.bridgeUnsubscribe?.();
@@ -354,6 +358,7 @@ export class PiHost extends EventEmitter {
     await this.bind();
   }
   private async bind() {
+    this.compactionState.clear();
     this.unsubscribe?.();
     this.bridgeUnsubscribe?.();
     this.bridge.dispose();
@@ -390,6 +395,15 @@ export class PiHost extends EventEmitter {
       reload: () => this.reload(),
     };
     this.unsubscribe = this.session.subscribe((event) => {
+      const manuallyRequested = this.compactionState.manualRequested;
+      this.compactionState.handle(event, this.session.sessionManager);
+      if (event.type === "compaction_end") {
+        if (event.aborted) this.bridge.notify("Compaction cancelled", "info");
+        else if (event.errorMessage && !manuallyRequested)
+          this.bridge.notify(event.errorMessage, "error");
+      }
+      if (event.type === "compaction_start" || event.type === "compaction_end")
+        this.invalidateProjection();
       if (event.type === "message_update") {
         this.liveMessage = event.message;
         this.liveId = `live:${event.message.timestamp ?? Date.now()}`;
@@ -407,7 +421,7 @@ export class PiHost extends EventEmitter {
       uiContext: this.bridge,
       commandContextActions: actions,
       abortHandler: () => {
-        void this.abort();
+        void this.session.abort().catch((error) => this.report(error));
       },
       shutdownHandler: () => {
         this.emit("shutdown");
@@ -527,7 +541,10 @@ export class PiHost extends EventEmitter {
       title: this.metadata.title,
       model: this.session.model?.name ?? "Choose a model",
       reasoning: this.session.thinkingLevel,
-      status: this.bridge.dialogCapturesInput
+      ...(this.compactionState.active ? { compaction: { ...this.compactionState.active } } : {}),
+      status: this.compactionState.active
+        ? "compacting"
+        : this.bridge.dialogCapturesInput
         ? "waiting for input"
         : this.session.isStreaming
           ? "working"
@@ -557,7 +574,27 @@ export class PiHost extends EventEmitter {
       throw error;
     }
   }
+  async compact() {
+    if (this.compactionState.active || this.session.isCompacting)
+      throw new Error("Context compaction is already running");
+    const session = this.session;
+    this.compactionState.beginManual();
+    this.emit("change");
+    try {
+      return await session.compact();
+    } catch (error) {
+      if (this.compactionState.cancelled) return undefined;
+      throw error;
+    } finally {
+      if (this.session === session) {
+        this.compactionState.clear();
+        this.invalidateProjection();
+        this.emit("change");
+      }
+    }
+  }
   async abort() {
+    this.compactionState.userAbort();
     await this.session.abort();
     this.emit("change");
   }
@@ -747,6 +784,7 @@ export class PiHost extends EventEmitter {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    this.compactionState.clear();
     await this.runtime?.dispose();
     this.unsubscribe?.();
     this.bridgeUnsubscribe?.();

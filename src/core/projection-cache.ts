@@ -1,4 +1,5 @@
 import { readdirSync, statSync } from "node:fs";
+import { COMPACTION_INTERRUPTION_TYPE } from "./compaction-state.ts";
 import { dirname, join, resolve } from "node:path";
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
@@ -333,6 +334,10 @@ export class ProjectionCache {
         ),
         ...this.inbox.filter((note) => !this.delivered.has(note.id)),
       ];
+    if (delta.some((entry) => object(entry).customType === COMPACTION_INTERRUPTION_TYPE)) {
+      this.rebuild();
+      return;
+    }
     for (const record of projectCompactions(delta))
       this.compactions.push(record);
     addUsage(this.baseUsage, projectUsage(delta));

@@ -16,3 +16,11 @@ Archive: `arahisman-pi-opentui-0.1.0-alpha.3.tgz`
 SHA256: `10bff2c4e733281e14c8a6941d54cfa73945688e035d0557020413c76bbd9da2`
 
 Detailed local evidence is generated under ignored `.artifacts/verification/`. Other platform and extension limitations in the README still apply.
+
+## Current main: compaction presentation fix (after alpha.3)
+
+The checkout now keeps a dedicated progress block and animated compacting status during manual, automatic and extension-triggered compaction. Successful compaction hides only its associated interrupted-response error; cancellation and failures remain visible. Session messages are retained unchanged, and the presentation attribution respects the active branch and reopening.
+
+Verification: strict TypeScript checking passed; the complete suite passed 187 tests with 4,723 assertions across 29 files. This includes actual SDK lifecycle fixtures, extension-origin abort/compact, native manual/threshold/overflow paths, cancellation/failure, persisted attribution, selection, real PTY resize/exit, and native Pi handoff. All model providers used by tests were offline fixtures. Actual rendered wide and narrow compaction screens were inspected. Detailed local logs and screenshots are under ignored `.artifacts/verification/`.
+
+These source changes are newer than the published alpha.3 archive; that archive and its checksum above remain unchanged.

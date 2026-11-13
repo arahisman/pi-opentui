@@ -55,6 +55,7 @@ pi-opentui --clean
 - Searchable commands, model selection, session history and branch navigation.
 - Native Pi extension dialogs and custom-renderer bridging.
 - Context indicator, usage by model and session-scope labels.
+- A dedicated compaction progress block and live status, with Escape cancellation; genuine failures remain visible.
 - A scrolling sidebar that becomes an overlay in narrow terminals.
 - Newest-first advisor history with relative ages and persistent voluntary usefulness ratings from the executor.
 - Copy-on-release selection, preserved while background updates arrive.

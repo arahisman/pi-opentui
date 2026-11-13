@@ -35,6 +35,12 @@ export interface ShellState {
   reviewedAdvice?: string[];
   compactionCount?: number;
   lastCompactionBefore?: number;
+  compaction?: {
+    startedAt: number;
+    automatic: boolean;
+    reason?: string;
+    tokensBefore?: number;
+  };
   workingMessage?: string;
   workingFrame?: number;
   workingGlyph?: string;
@@ -52,6 +58,9 @@ export class Shell {
   private readonly extensionHeader: TextRenderable;
   private readonly extensionFooter: TextRenderable;
   private composer: BoxRenderable;
+  private readonly compactionBlock: BoxRenderable;
+  private readonly compactionDetails: TextRenderable;
+  private readonly compactionTitle: TextRenderable;
   private readonly heading: TextRenderable;
   private readonly toolModeButton: TextRenderable;
   onToolDisplayChange?: (mode: ToolDisplay) => void;
@@ -230,6 +239,30 @@ export class Shell {
       contentOptions: { flexDirection: "column" },
     });
     main.add(this.extensionAbove);
+    this.compactionBlock = new BoxRenderable(renderer, {
+      id: "compaction-progress",
+      visible: false,
+      border: ["left"],
+      borderColor: p.warning,
+      backgroundColor: p.backgroundPanel,
+      paddingX: 1,
+      marginTop: 1,
+      flexDirection: "column",
+      flexShrink: 0,
+    });
+    this.compactionTitle = new TextRenderable(renderer, {
+      content: "",
+      fg: p.warning,
+      height: 1,
+    });
+    this.compactionBlock.add(this.compactionTitle);
+    this.compactionDetails = new TextRenderable(renderer, {
+      content: "",
+      fg: p.textMuted,
+      wrapMode: "word",
+    });
+    this.compactionBlock.add(this.compactionDetails);
+    main.add(this.compactionBlock);
     const composer = (this.composer = new BoxRenderable(renderer, {
       id: "composer",
       height: 6,
@@ -373,7 +406,31 @@ export class Shell {
     this.model.content = `${state.model} · ${state.reasoning}     enter send · shift+enter newline`;
     this.updateToolMode();
     const colors = [p.primary, p.warning, p.info, p.secondary, p.accent];
-    const active = state.workingMessage !== undefined;
+    const compaction = state.compaction;
+    this.compactionBlock.visible = compaction !== undefined;
+    const compactionTitle = compaction ? "Compacting context" : "";
+    if (this.compactionTitle.plainText !== compactionTitle)
+      this.compactionTitle.content = compactionTitle;
+    if (!compaction && this.compactionDetails.plainText)
+      this.compactionDetails.content = "";
+    if (compaction) {
+      const elapsed = Math.floor((Date.now() - compaction.startedAt) / 1000);
+      const details = [
+        [
+          compaction.automatic ? "Automatic compaction" : undefined,
+          compaction.tokensBefore !== undefined
+            ? `${formatTokens(compaction.tokensBefore)} tokens before`
+            : undefined,
+          Number.isFinite(elapsed) && elapsed >= 0 ? `${elapsed}s elapsed` : undefined,
+        ].filter(Boolean).join(" · "),
+        compaction.reason && compaction.reason !== "manual" ? `Reason: ${compaction.reason}` : undefined,
+        "Summarizing earlier messages · esc cancel",
+      ].filter(Boolean).join("\n");
+      if (this.compactionDetails.plainText !== details)
+        this.compactionDetails.content = details;
+    }
+    const active = state.workingMessage !== undefined || compaction !== undefined;
+    const workingMessage = compaction ? "Compacting context" : state.workingMessage;
     const frame = state.workingFrame ?? 0;
     const chunks = [
       {
@@ -392,7 +449,7 @@ export class Shell {
         : []),
       {
         __isChunk: true as const,
-        text: `${active ? " " : ""}${(state.workingMessage ?? state.status).slice(0, 32).padEnd(32)} │ ${state.project}    ctrl+p commands`,
+        text: `${active ? " " : ""}${(workingMessage ?? state.status).slice(0, 32).padEnd(32)} │ ${state.project}    ctrl+p commands`,
         fg: RGBA.fromHex(p.textMuted),
       },
     ];
